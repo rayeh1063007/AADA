@@ -124,9 +124,9 @@ class RunTsne():
 
         vecs2tsne = feat_vecs_temp
         
-        perplexity_list = [5,10,20,50,75,100]
-        learning_list = [100,200,500,1000,4000]
-        iter_list = [10000,10000,10000,5000,3000]
+        perplexity_list = [50]
+        learning_list = [4800]
+        iter_list = [3000]
         for _, per in enumerate(perplexity_list):
             for i, lr in enumerate(learning_list):
                 if adding_name is not None:

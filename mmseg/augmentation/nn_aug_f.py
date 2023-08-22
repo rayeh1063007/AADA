@@ -10,39 +10,37 @@ def relaxed_bernoulli(logits, temp=0.0001, device='cpu'):
     l = torch.log(u) - torch.log(1 - u)
     return ((l + logits)/temp).sigmoid().to(int)
 
-class TriangleWave(torch.autograd.Function):
-    @staticmethod
-    def forward(self, x):
-        o = torch.acos(torch.cos(x * math.pi)) / math.pi
-        self.save_for_backward(x)
-        return o
-
-    @staticmethod
-    def backward(self, grad):
-        o = self.saved_tensors[0]
-        # avoid nan gradient at the peak by replacing it with the right derivative
-        o = torch.floor(o) % 2
-        grad[o == 1] *= -1 
-        return grad
-
-
 class ColorAugmentation(nn.Module):
-    def __init__(self, f_dim=19, scale=1, hidden=128, n_dim=128, dropout_ratio=0.8, with_condition=True, init='random'):
+    def __init__(self, f_dim=512, scale=1, hidden=128, n_dim=128, dropout_ratio=0.8, with_condition=True, init='random'):
         super().__init__()
         
-        n_hidden = 4 * n_dim
         conv = lambda ic, io, k : nn.Conv2d(ic, io, k, padding=k//2, bias=False)
-        linear = lambda ic, io : nn.Linear(ic, io, False)
+        depthwise = lambda ic, io, k : nn.Conv2d(ic, io, kernel_size=k, padding=k//2, groups=ic, bias=False)
+        pointwise = lambda ic, io : nn.Conv2d(ic, io, kernel_size=1, bias=False)
         bn2d = lambda c : nn.BatchNorm2d(c, track_running_stats=False)
-        bn1d = lambda c : nn.BatchNorm1d(c, track_running_stats=False)
+        pool = lambda k, s : nn.MaxPool2d(kernel_size=k, stride=s)
 
-        # embedding layer for context vector
+        # embedding layer for RGB, condition, noise
         if with_condition:
-            self.color_enc1 = conv(3+f_dim, hidden, 1)
+            # 將輸入的條件進行降維 512*16*16->64*2*2
+            self.context_enc_body = nn.Sequential(
+                depthwise(f_dim, f_dim, 1),
+                pointwise(f_dim,256),
+                bn2d(256),
+                nn.LeakyReLU(0.2, True),
+                pool(4, 2),
+                depthwise(256, 256, 1),
+                pointwise(256,64),
+                bn2d(64),
+                nn.LeakyReLU(0.2, True),
+                pool(4, 3),
+            )
+            # 將RGB, 條件, noise壓縮成256個channel
+            self.color_enc1 = conv(3+256+n_dim, hidden, 1)
         else:
-            self.color_enc1 = conv(3, hidden, 1)
-        # embedding layer for RGB
-        # body for RGB
+            self.color_enc1 = conv(3+n_dim, hidden, 1)
+        
+        # body for scale and shift
         self.color_enc_body = nn.Sequential(
             bn2d(hidden),
             nn.LeakyReLU(0.2, True),
@@ -52,32 +50,19 @@ class ColorAugmentation(nn.Module):
             nn.LeakyReLU(0.2, True),
             nn.Dropout2d(dropout_ratio) if dropout_ratio > 0 else nn.Sequential()
         )
-        # output layer for RGB
+        # output layer for scale and shift
         self.c_regress = conv(hidden, 6, 1)
-        # body for noise vector
-        self.noise_enc = nn.Sequential(
-            linear(n_dim, n_hidden),
-            bn1d(n_hidden),
-            nn.LeakyReLU(0.2, True),
-            nn.Dropout(dropout_ratio) if dropout_ratio > 0 else nn.Sequential(),
-            linear(n_hidden, n_hidden),
-            bn1d(n_hidden),
-            nn.LeakyReLU(0.2, True),
-            nn.Dropout(dropout_ratio) if dropout_ratio > 0 else nn.Sequential(),
-        )
-        # output layer for noise vector
-        self.n_regress = linear(n_hidden, 2)
 
         self.register_parameter('logits', nn.Parameter(torch.zeros(1)))
         # initialize parameters
         self.reset(init)
 
         self.with_condition = with_condition
-        self.f_dim = f_dim
         self.scale = scale
         self.relax = True
         self.stochastic = True
 
+    #目前擴增的機率是固定的，之後可以嘗試讓他可學習
     def sampling(self, scale, shift, temp=0.0001):
         prob = torch.ones([scale.shape[0]])
         if self.stochastic: # random apply
@@ -93,29 +78,24 @@ class ColorAugmentation(nn.Module):
         B,C,H,W = x.shape
         # per-pixel scale and shift "with" context information
         if self.with_condition:
-            targets = c.clone()
-            n_classes = self.f_dim
-            targets[torch.where(targets==255)] = n_classes
-            onehot_targets = F.one_hot(targets, n_classes+1).float()
-            if onehot_targets.ndim==5:
-                onehot_targets = onehot_targets[:,:,:,:,:-1]
-                onehot_targets = onehot_targets.squeeze(1).permute(0,3,1,2)
-            elif onehot_targets.ndim==4:
-                onehot_targets = onehot_targets[:,:,:,:-1]
-                onehot_targets = onehot_targets.permute(0,3,1,2)
-            xc = torch.cat([x,onehot_targets],1)
-            feature = self.color_enc1(xc)
+            # 條件降維 512*16*16->64*2*2
+            c = self.context_enc_body(c)
+            # 攤平 64*2*2->256*1*1
+            c = torch.flatten(c, 1)
+            # 依照channel複製成 256*256*256
+            c = c.view(B, c.shape[1], 1, 1).repeat(1,1,H,W)
+            noise = noise.view(B,noise.shape[1],1,1).repeat(1,1,H,W)
+            # 將每個pixel, 條件與noise concat
+            feature = self.color_enc1(torch.cat([x, c, noise], 1))
         else: # per-pixel scale and shift "without" context information
-            feature = self.color_enc1(x)
+            noise = noise.view(B,noise.shape[1],1,1).repeat(1,1,H,W)
+            feature = self.color_enc1(torch.cat([x, noise], 1))
         feature = self.color_enc_body(feature)
         factor = self.c_regress(feature)
-        gfactor = self.noise_enc(noise)
-        gfactor = self.n_regress(gfactor).reshape(-1, 2, 1, 1)
         # add up parameters
         scale, shift = factor.chunk(2, dim=1)
-        g_scale, g_shift = gfactor.chunk(2, dim=1)
-        scale = (g_scale + scale).sigmoid()
-        shift = (g_shift + shift).sigmoid()
+        scale = scale.sigmoid()
+        shift = shift.sigmoid()
         # scaling
         scale = self.scale * (scale - 0.5) + 1
         shift = shift - 0.5
@@ -127,18 +107,16 @@ class ColorAugmentation(nn.Module):
 
         return scale, shift, prob
 
-    def reset(self,init):
+    def reset(self, init='random'):
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.kaiming_normal_(m.weight, 0.2, 'fan_out')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        if init=='random':
-            nn.init.normal_(self.c_regress.weight, 0)
-            nn.init.normal_(self.n_regress.weight, 0)
-        elif init=='constant':
+        if init == 'random':
+            nn.init.normal_(self.c_regress.weight)
+        elif init == 'constant':
             nn.init.constant_(self.c_regress.weight, 0)
-            nn.init.constant_(self.n_regress.weight, 0)
         nn.init.constant_(self.logits, 0)
 
     def transform(self, x, scale, shift):
@@ -150,36 +128,33 @@ class ColorAugmentation(nn.Module):
                                      mask.sum(-2, keepdim=True) < h) # mask zero padding region
 
         x = (scale * x + shift) * mask
-        # return TriangleWave.apply(x)
         return x
         
 
 class GeometricAugmentation(nn.Module):
-    def __init__(self, f_dim=19, scale=0.5, n_dim=128, dropout_ratio=0.8, with_condition=True, init='random'):
+    def __init__(self, f_dim=512, scale=0.5, n_dim=128, dropout_ratio=0.8, with_condition=True, init='random'):
         super().__init__()
 
-        hidden = 512
+        hidden = n_dim
         linear = lambda ic, io : nn.Linear(ic, io, False)
-        conv = lambda ic, io, k : nn.Conv2d(ic, io, k, padding=k//2, bias=False)
+        depthwise = lambda ic, io, k : nn.Conv2d(ic, io, kernel_size=k, padding=k//2, groups=ic, bias=False)
+        pointwise = lambda ic, io : nn.Conv2d(ic, io, kernel_size=1, bias=False)
         bn1d = lambda c : nn.BatchNorm1d(c, track_running_stats=False)
         bn2d = lambda c : nn.BatchNorm2d(c, track_running_stats=False)
-        mpool = lambda k, s : nn.MaxPool2d(kernel_size=k, stride=s)
-        apool = lambda k, s : nn.AvgPool2d(kernel_size=k, stride=s)
+        pool = lambda k, s : nn.MaxPool2d(kernel_size=k, stride=s)
 
         if with_condition:
             self.context_enc_body = nn.Sequential(
-                conv(f_dim,128,1),
-                bn2d(128),
+                depthwise(f_dim, f_dim, 1),
+                pointwise(f_dim,256),
+                bn2d(256),
                 nn.LeakyReLU(0.2, True),
-                mpool(4, 4),
-                conv(128,64,1),
+                pool(4, 2),
+                depthwise(256, 256, 1),
+                pointwise(256,64),
                 bn2d(64),
                 nn.LeakyReLU(0.2, True),
-                mpool(4, 4),
-                conv(64,1,1),
-                bn2d(1),
-                nn.LeakyReLU(0.2, True),
-                apool(4, 4),
+                pool(4, 3),
             )
 
         self.body = nn.Sequential(
@@ -187,13 +162,12 @@ class GeometricAugmentation(nn.Module):
             bn1d(hidden),
             nn.LeakyReLU(0.2, True),
             nn.Dropout(dropout_ratio) if dropout_ratio > 0 else nn.Sequential(),
-            linear(hidden, 128),
-            bn1d(128),
+            linear(hidden, hidden),
+            bn1d(hidden),
             nn.LeakyReLU(0.2, True),
             nn.Dropout(dropout_ratio) if dropout_ratio > 0 else nn.Sequential(),
         )
-
-        self.regressor = linear(128, 6)
+        self.regressor = linear(hidden, 6)
         # identity matrix
         self.register_buffer('i_matrix', torch.Tensor([[1, 0, 0], [0, 1, 0]]).reshape(1, 2, 3))
 
@@ -203,7 +177,6 @@ class GeometricAugmentation(nn.Module):
 
         self.with_condition = with_condition
         self.scale = scale
-        self.f_dim = f_dim
 
         self.relax = True
         self.stochastic = True
@@ -220,15 +193,9 @@ class GeometricAugmentation(nn.Module):
 
     def forward(self, x, noise, c=None, update=False):
         if self.with_condition:
-            targets = c.clone()
-            n_classes = self.f_dim
-            targets[torch.where(targets==255)] = n_classes
-            onehot_targets = F.one_hot(targets, n_classes+1).float()
-            onehot_targets = onehot_targets[:,:,:,:,:-1]
-            onehot_targets = onehot_targets.squeeze(1).permute(0,3,1,2)
-            features = self.context_enc_body(onehot_targets)
-            features = torch.flatten(features, 1)
-            features = torch.cat((noise,features), dim=1)
+            c = self.context_enc_body(c)
+            c = torch.flatten(c, 1)
+            features = torch.cat((c, noise), dim=1)
         else:
             features = noise
         features = self.body(features)
@@ -252,9 +219,10 @@ class GeometricAugmentation(nn.Module):
                     nn.init.constant_(m.bias, 0)
         # zero initialization
         if init=='random':
-            nn.init.normal_(self.regressor.weight, 0)
+            nn.init.normal_(self.regressor.weight)
         elif init=='constant':
-            nn.init.constant_(self.logits, 0)
+            nn.init.constant_(self.regressor.weight, 0)
+        nn.init.constant_(self.logits, 0)
 
     def transform(self, x, x_t, grid, pw=None):
         x = F.grid_sample(x, grid, mode='bilinear')

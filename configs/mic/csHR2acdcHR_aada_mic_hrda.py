@@ -79,6 +79,7 @@ uda = dict(
     enable_c_aug = True,
     enable_g_aug = True,
     enable_wandb = True,
+    enable_global_color_aug = False,
     cross_attention_block = 4,
     enable_cross_attention = True,
     lr = 6e-05,

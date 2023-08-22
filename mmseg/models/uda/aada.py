@@ -106,6 +106,8 @@ class AADA(UDADecorator):
         self.enable_g_aug = cfg['enable_g_aug']
         self.enable_c_aug = cfg['enable_c_aug']
         self.enable_t_aug = cfg['enable_t_aug']
+        # 是否要使用全域顏色擴增
+        self.enable_global_color_aug = cfg['enable_global_color_aug']
         # 是否要使用wandb套件(需要註冊帳號)
         self.enable_wandb = cfg['enable_wandb']
         # cross-attention consistency要使用的attention block
@@ -150,7 +152,7 @@ class AADA(UDADecorator):
         self.trainable_aug = augmentation.build_augmentation(self.f_dim, cfg['enable_g_aug'], cfg['enable_c_aug'], cfg['enable_t_aug']
                                                              , cfg['g_scale'], cfg['c_scale'], cfg['c_reg_coef'], 
                                                              with_condition=self.enable_augment_context, 
-                                                             init=self.augmentation_init)
+                                                             init=self.augmentation_init, global_trans=self.enable_global_color_aug)
         self.trainable_aug = self.trainable_aug.to('cuda:0')
         self.trainable_aug.train()
         self.aug_criterion  = nn.MSELoss()
@@ -438,7 +440,7 @@ class AADA(UDADecorator):
         log_vars = {}
         batch_size = img.shape[0]
         dev = img.device
-        self.trainable_aug.eval()
+        # self.trainable_aug.eval()
 
         # Init/update ema model
         if self.local_iter == 0:
@@ -718,7 +720,7 @@ class AADA(UDADecorator):
 
         # Train Augmentation model
         if self.local_iter % self.update_augmodel_iter == 0:
-            self.trainable_aug.train()
+            # self.trainable_aug.train()
             # stop seg model grad
             for p in self.trainable_aug.parameters():
                 p.requires_grad = True
@@ -772,14 +774,18 @@ class AADA(UDADecorator):
                 self.aug_optim.step()
                 
             # show bad augmented image
-            if self.local_iter > 5000 and loss_tea.item() > 0.5:
+            if self.local_iter>1500:
                 with torch.no_grad():
                     vis_pred_student = self.get_model().encode_decode(aug_img, aug_gt_semantic_seg)
                     vis_pred_student = vis_pred_student.argmax(dim=1)
                     vis_pred_tea = self.get_ema_model().encode_decode(aug_img, aug_gt_semantic_seg)
                     vis_pred_tea = vis_pred_tea.argmax(dim=1)
-                Teacher_out_dir = os.path.join(self.train_cfg['work_dir'],
-                                    'bad_aug_by_teacher')
+                if loss_tea.item() > 0.8:
+                    Teacher_out_dir = os.path.join(self.train_cfg['work_dir'],
+                                        'bad_aug_by_teacher')
+                elif loss_tea.item() < 0.2:
+                    Teacher_out_dir = os.path.join(self.train_cfg['work_dir'],
+                                        'good_aug_by_teacher')
                 os.makedirs(Teacher_out_dir, exist_ok=True)
                 vis_source_img = torch.clamp(denorm(img, means, stds), 0, 1)
                 vis_aug_source_img = torch.clamp(denorm(aug_img, means, stds), 0, 1)
@@ -860,10 +866,9 @@ class AADA(UDADecorator):
                     subplotimg(axs[1][3], vis_aug_source_img[j], 'Aug Source Image')
                     for ax in axs.flat:
                             ax.axis('off')
-                    plt.title = f"dis: {cross_dis.item()}"
                     plt.savefig(
                         os.path.join(crossA_out_dir,
-                                    f'{(self.local_iter + 1):06d}_{j}.png'))
+                                    f'{(self.local_iter + 1):06d}_{j}_{cross_dis.item():04f}.png'))
                     plt.close()
             
             # update wandb log
@@ -914,4 +919,18 @@ class AADA(UDADecorator):
             train_log_path = os.path.join(self.train_cfg['work_dir'], 'train_log.pkl')
             with open(train_log_path, 'wb') as fp:
                 pickle.dump(self.train_log, fp)
+        if self.local_iter%10000==0:
+            torch.save({
+                        'local_iter': self.local_iter,
+                        'model_state_dict': self.ema_model.state_dict(),
+                        'optimizer_state_dict': self.seg_opit.state_dict(),
+                    }, os.path.join(self.train_cfg['work_dir'], f'teacher_model_{self.local_iter}.pth'))
+            torch.save({
+                        'local_iter': self.local_iter,
+                        'model_state_dict': self.trainable_aug.state_dict(),
+                        'optimizer_state_dict': self.aug_optim.state_dict(),
+                        'enable_c_aug': self.enable_c_aug,
+                        'enable_g_aug': self.enable_g_aug,
+                        'f_dim': self.f_dim,
+                    }, os.path.join(self.train_cfg['work_dir'], f'aug_model_{self.local_iter}.pth'))
         return log_vars

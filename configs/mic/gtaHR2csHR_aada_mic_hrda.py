@@ -69,7 +69,7 @@ data = dict(
 )
 # MIC Parameters
 uda = dict(
-    name = 'gta2cs_MIC_GT_random',
+    name = 'gta2cs_MIC_FB_R_Best_global',
     debug_img_interval=100,
     g_scale = 0.5,
     c_scale = 0.8,
@@ -77,10 +77,13 @@ uda = dict(
     aug_lr = 1e-4,
     aug_weight_decay = 1e-2,
     update_augmodel_iter = 1,
+    f_dim = 512, #(19->GT, 512->FB4)
     enable_c_aug = True,
     enable_g_aug = True,
     enable_t_aug = False,
-    enable_wandb = True,
+    enable_global_color_aug = True,
+    enable_augment_context = True,
+    enable_wandb = False,
     cross_attention_block = 4,
     enable_cross_attention = True,
     enable_adv = True,
@@ -88,8 +91,6 @@ uda = dict(
     max_iters = 40000,
     epsilon = 0.,
     cross_dis_coef = 10,
-    enable_augment_context = True,
-    f_dim = 19, #(19->GT, 512->FB4)
     augmentation_init = "random",
     enable_CjAug = False,
     adv_coef = 1.,
@@ -123,7 +124,7 @@ runner = dict(type='IterBasedRunner', max_iters=40000)
 checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=4)
 evaluation = dict(interval=1000, metric='mIoU', save_best = 'mIoU')
 # Meta Information for Result Analysis
-name = 'gta2cs_MIC_GT_Normal_AugUp1Lr03_swd1_Adv01'
+name = 'gta2cs_MIC_FB_R_Best_global'
 exp = 'basic'
 name_dataset = 'gtaHR2cityscapesHR_1024x1024'
 name_architecture = 'hrda1-512-0.1_daformer_sepaspp_sl_mitb5'
