@@ -16,6 +16,7 @@ In that environment, the requirements can be installed with:
 
 ```shell
 pip install -r requirements.txt -f https://download.pytorch.org/whl/torch_stable.html
+sh install_tsne.sh
 pip install mmcv-full==1.3.7  # requires the other packages to be installed first
 ```
 
@@ -113,7 +114,6 @@ CUDA_VISIBLE_DEVICES=0 python run_experiments.py --config configs/mic/synthiaHR2
 CUDA_VISIBLE_DEVICES=0 python run_experiments.py --config configs/mic/csHR2darkHR_aada_mic_hrda.py
 CUDA_VISIBLE_DEVICES=0 python run_experiments.py --config configs/mic/csHR2acdcHR_aada_mic_hrda.py
 ```
-
 
 The logs and checkpoints are stored in `work_dirs/`.
 
