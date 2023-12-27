@@ -152,28 +152,6 @@ python -m tools.test_tSNE path/to/config_file path/to/checkpoint_file --sample 1
 The predictions can be submitted to the public evaluation server of the
 respective dataset to obtain the test score.
 
-## Checkpoints
-
-Below, we provide checkpoints of MIC(HRDA) for the different benchmarks.
-As the results in the paper are provided as the mean over three random
-seeds, we provide the checkpoint with the median validation performance here.
-
-* [AADA for GTA→Cityscapes](https://drive.google.com/file/d/1p_Ytxmj8EckYsq6SdZNZJNC3sgxVRn2d/view?usp=sharing)
-* [AADA for Synthia→Cityscapes](https://drive.google.com/file/d/1-Ed0Z2APrhIdsuQTOWXNlZwJJ9Yr2-Vu/view?usp=sharing)
-* [AADA for Cityscapes→ACDC](https://drive.google.com/file/d/10RNOAyUY5nYKzIIbNTie458r9etzfvtc/view?usp=share_link)
-* [AADA for Cityscapes→DarkZurich](https://drive.google.com/file/d/1HXIwLULUsspBG4U1UAd7OQnDq1G33aTA/view?usp=sharing)
-
-The checkpoints come with the training logs. Please note that:
-
-* The logs provide the mIoU for 19 classes. For Synthia→Cityscapes, it is
-  necessary to convert the mIoU to the 16 valid classes. Please, read the
-  section above for converting the mIoU.
-* The logs provide the mIoU on the validation set. For Cityscapes→ACDC and
-  Cityscapes→DarkZurich the results reported in the paper are calculated on the
-  test split. For DarkZurich, the performance significantly differs between
-  validation and test split. Please, read the section above on how to obtain
-  the test mIoU.
-
 ## Framework Structure
 
 This project is based on [mmsegmentation version 0.16.0](https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0).
